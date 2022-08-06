@@ -1,0 +1,1598 @@
+# 一、finishBeanFactoryInitialization(beanFactory)
+
+实例化所有剩余的非懒加载单例，比如`invokeBeanFactoryPostProcessors`方法中根据各种注解解析出来的类，在这个时候都会被初始化。实例化的过程各种`BeanPostProcessor`开始起作用。
+
+* **finishBeanFactoryInitialization(beanFactory)：**
+
+  ```java
+  protected void finishBeanFactoryInitialization(ConfigurableListableBeanFactory beanFactory) {
+      // Initialize conversion service for this context.
+      // 1.初始化此上下文的转换服务
+      if (beanFactory.containsBean(CONVERSION_SERVICE_BEAN_NAME) &&
+              beanFactory.isTypeMatch(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class)) {
+          beanFactory.setConversionService(
+                  beanFactory.getBean(CONVERSION_SERVICE_BEAN_NAME, ConversionService.class));
+      }
+   
+      // Register a default embedded value resolver if no bean post-processor
+      // (such as a PropertyPlaceholderConfigurer bean) registered any before:
+      // at this point, primarily for resolution in annotation attribute values.
+      // 2.如果beanFactory之前没有注册嵌入值解析器，则注册默认的嵌入值解析器：主要用于注解属性值的解析。
+      if (!beanFactory.hasEmbeddedValueResolver()) {
+          beanFactory.addEmbeddedValueResolver(new StringValueResolver() {
+              @Override
+              public String resolveStringValue(String strVal) {
+                  return getEnvironment().resolvePlaceholders(strVal);
+              }
+          });
+      }
+   
+      // Initialize LoadTimeWeaverAware beans early to allow for registering their transformers early.
+      // 3.初始化LoadTimeWeaverAware Bean实例对象
+      String[] weaverAwareNames = beanFactory.getBeanNamesForType(LoadTimeWeaverAware.class, false, false);
+      for (String weaverAwareName : weaverAwareNames) {
+          getBean(weaverAwareName);
+      }
+   
+      // Stop using the temporary ClassLoader for type matching.
+      beanFactory.setTempClassLoader(null);
+   
+      // Allow for caching all bean definition metadata, not expecting further changes.
+      // 4.冻结所有bean定义，注册的bean定义不会被修改或进一步后处理，因为马上要创建 Bean 实例对象了
+      beanFactory.freezeConfiguration();
+   
+      // Instantiate all remaining (non-lazy-init) singletons.
+      // 5.实例化所有剩余（非懒加载）单例对象
+      beanFactory.preInstantiateSingletons();
+  }
+  ```
+
+## 1.1 preInstantiateSingletons()
+
+* **preInstantiateSingletons()**
+
+  ```java
+  @Override
+  public void F() throws BeansException {
+      if (this.logger.isDebugEnabled()) {
+          this.logger.debug("Pre-instantiating singletons in " + this);
+      }
+   
+      // Iterate over a copy to allow for init methods which in turn register new bean definitions.
+      // While this may not be part of the regular factory bootstrap, it does otherwise work fine.
+      // 1.创建beanDefinitionNames的副本beanNames用于后续的遍历，以允许init等方法注册新的bean定义
+      List<String> beanNames = new ArrayList<String>(this.beanDefinitionNames);
+   
+      // Trigger initialization of all non-lazy singleton beans...
+      // 2.遍历beanNames，触发所有非懒加载单例bean的初始化
+      for (String beanName : beanNames) {
+          // 3.获取beanName对应的MergedBeanDefinition
+          RootBeanDefinition bd = getMergedLocalBeanDefinition(beanName);
+          // 4.bd对应的Bean实例：不是抽象类 && 是单例 && 不是懒加载
+          if (!bd.isAbstract() && bd.isSingleton() && !bd.isLazyInit()) {
+              // 5.判断beanName对应的bean是否为FactoryBean
+              if (isFactoryBean(beanName)) {
+                  // 5.1.1 通过beanName获取FactoryBean实例
+                  // 通过getBean(&beanName)拿到的是FactoryBean本身；通过getBean(beanName)拿到的是FactoryBean创建的Bean实例
+                  final FactoryBean<?> factory = (FactoryBean<?>) getBean(FACTORY_BEAN_PREFIX + beanName);
+                  // 5.1.2 判断这个FactoryBean是否希望急切的初始化
+                  boolean isEagerInit;
+                  if (System.getSecurityManager() != null && factory instanceof SmartFactoryBean) {
+                      isEagerInit = AccessController.doPrivileged(new PrivilegedAction<Boolean>() {
+                          @Override
+                          public Boolean run() {
+                              return ((SmartFactoryBean<?>) factory).isEagerInit();
+                          }
+                      }, getAccessControlContext());
+                  } else {
+                      isEagerInit = (factory instanceof SmartFactoryBean &&
+                              ((SmartFactoryBean<?>) factory).isEagerInit());
+                  }
+                  if (isEagerInit) {
+                      // 5.1.3 如果希望急切的初始化，则通过beanName获取bean实例
+                      getBean(beanName);
+                  }
+              } else {
+                  // 5.2.1 如果beanName对应的bean不是FactoryBean，只是普通Bean，通过beanName获取bean实例
+                  getBean(beanName);
+              }
+          }
+      }
+   
+      // Trigger post-initialization callback for all applicable beans...
+      // 6.遍历beanNames，触发所有SmartInitializingSingleton的后初始化回调
+      for (String beanName : beanNames) {
+          // 6.1 拿到beanName对应的bean实例
+          Object singletonInstance = getSingleton(beanName);
+          // 6.2 判断singletonInstance是否实现了SmartInitializingSingleton接口
+          if (singletonInstance instanceof SmartInitializingSingleton) {
+              final SmartInitializingSingleton smartSingleton = (SmartInitializingSingleton) singletonInstance;
+              // 6.3 触发SmartInitializingSingleton实现类的afterSingletonsInstantiated方法
+              if (System.getSecurityManager() != null) {
+                  AccessController.doPrivileged(new PrivilegedAction<Object>() {
+                      @Override
+                      public Object run() {
+                          smartSingleton.afterSingletonsInstantiated();
+                          return null;
+                      }
+                  }, getAccessControlContext());
+              } else {
+                  smartSingleton.afterSingletonsInstantiated();
+              }
+          }
+      }
+  }
+  ```
+
+**这个方法主要是循环遍历BeanDefinitionMap, 调用getBean, 去生产bean：**
+
+1. 创建beanDefinitionNames的副本beanNames用于后续的遍历，以允许init等方法注册新的bean定义
+
+2. 遍历beanNames，触发所有非懒加载单例bean的初始化
+
+3. 获取beanName对应的MergedBeanDefinition
+
+4. bd对应的Bean实例：不是抽象类 && 是单例 && 不是懒加载
+
+5. 判断beanName对应的bean是否为FactoryBean
+   1. 是FactoryBean类型
+      1. 通过beanName获取FactoryBean实例
+      2. 判断这个FactoryBean是否希望急切的初始化
+      3. 如果希望急切的初始化，则通过beanName获取bean实例
+   2. 不是FactoryBean类型
+      1. **通过get(beanName)获取bean实例（核心）**
+6. 遍历beanNames，触发所有SmartInitializingSingleton的后初始化回调
+
+
+
+# 二、getBean(name)方法
+
+* **该方法是一个空壳方法,没有任何的实现逻辑 真正的逻辑调用在doGetBean()中**
+
+  ```java
+  @Override
+  public Object getBean(String name) throws BeansException {
+     //真正的获取bean的逻辑
+     return doGetBean(name, null, null, false);
+  }
+  ```
+
+  
+
+# 三、doGetBean(name, null, null, false)方法
+
+```java
+protected <T> T doGetBean(
+        final String name, final Class<T> requiredType, final Object[] args, boolean typeCheckOnly)
+        throws BeansException {
+    // 1.解析beanName，主要是解析别名、去掉FactoryBean的前缀“&”
+    final String beanName = transformedBeanName(name);
+    Object bean;
+ 
+    // Eagerly check singleton cache for manually registered singletons.
+    // 2.尝试从缓存中获取beanName对应的实例
+    Object sharedInstance = getSingleton(beanName);
+    if (sharedInstance != null && args == null) {
+        // 如果beanName的实例存在于缓存中
+        if (logger.isDebugEnabled()) {
+            if (isSingletonCurrentlyInCreation(beanName)) {
+                logger.debug("Returning eagerly cached instance of singleton bean '" + beanName +
+                        "' that is not fully initialized yet - a consequence of a circular reference");
+            } else {
+                logger.debug("Returning cached instance of singleton bean '" + beanName + "'");
+            }
+        }
+        // 3.返回beanName对应的实例对象（主要用于FactoryBean的特殊处理，普通Bean会直接返回sharedInstance本身）
+        bean = getObjectForBeanInstance(sharedInstance, name, beanName, null);
+    } else {
+        // Fail if we're already creating this bean instance:
+        // We're assumably within a circular reference.
+        // 4.scope为prototype的循环依赖校验：如果beanName已经正在创建Bean实例中，而此时我们又要再一次创建beanName的实例，则代表出现了循环依赖，需要抛出异常。
+        // 例子：如果存在A中有B的属性，B中有A的属性，那么当依赖注入的时候，就会产生当A还未创建完的时候因为对于B的创建再次返回创建A，造成循环依赖
+        if (isPrototypeCurrentlyInCreation(beanName)) {
+            throw new BeanCurrentlyInCreationException(beanName);
+        }
+ 
+        // Check if bean definition exists in this factory.
+        // 获取parentBeanFactory
+        BeanFactory parentBeanFactory = getParentBeanFactory();
+        // 5.1 如果parentBeanFactory存在，并且beanName在当前BeanFactory不存在Bean定义，则尝试从parentBeanFactory中获取bean实例
+        if (parentBeanFactory != null && !containsBeanDefinition(beanName)) {
+            // Not found -> check parent.
+            // 5.2 将别名解析成真正的beanName
+            String nameToLookup = originalBeanName(name);
+            // 5.3 尝试在parentBeanFactory中获取bean对象实例
+            if (args != null) {
+                // Delegation to parent with explicit args.
+                return (T) parentBeanFactory.getBean(nameToLookup, args);
+            } else {
+                // No args -> delegate to standard getBean method.
+                return parentBeanFactory.getBean(nameToLookup, requiredType);
+            }
+        }
+ 
+        if (!typeCheckOnly) {
+            // 如果不是仅仅做类型检测，而是创建bean实例，这里要将beanName放到alreadyCreated缓存
+            markBeanAsCreated(beanName);
+        }
+ 
+        try {
+            // 根据beanName重新获取MergedBeanDefinition（步骤6将MergedBeanDefinition删除了，这边获取一个新的）
+            final RootBeanDefinition mbd = getMergedLocalBeanDefinition(beanName);
+            // 检查MergedBeanDefinition
+            checkMergedBeanDefinition(mbd, beanName, args);
+ 
+            // Guarantee initialization of beans that the current bean depends on.
+            // 6.拿到当前bean依赖的bean名称集合，在实例化自己之前，需要先实例化自己依赖的bean
+            String[] dependsOn = mbd.getDependsOn();
+            if (dependsOn != null) {
+                // 6.1 遍历当前bean依赖的bean名称集合
+                for (String dep : dependsOn) {
+                    // 6.2 检查dep是否依赖于beanName，即检查是否存在循环依赖
+                    if (isDependent(beanName, dep)) {
+                        // 6.3 如果是循环依赖则抛异常
+                        throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                                "Circular depends-on relationship between '" + beanName + "' and '" + dep + "'");
+                    }
+                    // 6.4 将dep和beanName的依赖关系注册到缓存中
+                    registerDependentBean(dep, beanName);
+                    // 6.5 获取dep对应的bean实例，如果dep还没有创建bean实例，则创建dep的bean实例
+                    getBean(dep);
+                }
+            }
+ 
+            // Create bean instance.
+            // 7.创建单例bean
+            if (mbd.isSingleton()) {
+                // 7.1 把beanName 和一个singletonFactory传入一个回调对象用于回调
+                sharedInstance = getSingleton(beanName, new ObjectFactory<Object>() {
+                    @Override
+                    public Object getObject() throws BeansException {    //
+                        try {
+                            // 创建Bean实例
+                            return createBean(beanName, mbd, args);
+                        } catch (BeansException ex) {
+                            //创建bean的过程中发生异常,需要销毁关于当前bean的所有信息
+                            destroySingleton(beanName);
+                            throw ex;
+                        }
+                    }
+                });
+                // 返回beanName对应的实例对象
+                bean = getObjectForBeanInstance(sharedInstance, name, beanName, mbd);
+            } else if (mbd.isPrototype()) {
+                // scope为prototype的bean创建
+                // It's a prototype -> create a new instance.
+                Object prototypeInstance = null;
+                try {
+                    // 创建实例前的操作（将beanName保存到prototypesCurrentlyInCreation缓存中）
+                    beforePrototypeCreation(beanName);
+                    // 创建Bean实例
+                    prototypeInstance = createBean(beanName, mbd, args);
+                } finally {
+                    // 创建实例后的操作（将创建完的beanName从prototypesCurrentlyInCreation缓存中移除）
+                    afterPrototypeCreation(beanName);
+                }
+                // 返回beanName对应的实例对象
+                bean = getObjectForBeanInstance(prototypeInstance, name, beanName, mbd);
+            } else {
+                // 其他scope的bean创建，可能是request之类的
+                // 根据scopeName，从缓存拿到scope实例
+                String scopeName = mbd.getScope();
+                final Scope scope = this.scopes.get(scopeName);
+                if (scope == null) {
+                    throw new IllegalStateException("No Scope registered for scope name '" + scopeName + "'");
+                }
+                try {
+                    // 其他scope的bean创建（新建了一个ObjectFactory，并且重写了getObject方法）
+                    Object scopedInstance = scope.get(beanName, new ObjectFactory<Object>() {
+                        @Override
+                        public Object getObject() throws BeansException {
+                            // 创建实例前的操作（将beanName保存到prototypesCurrentlyInCreation缓存中）
+                            beforePrototypeCreation(beanName);
+                            try {
+                                // 创建bean实例
+                                return createBean(beanName, mbd, args);
+                            } finally {
+                                // 创建实例后的操作（将创建完的beanName从prototypesCurrentlyInCreation缓存中移除）
+                                afterPrototypeCreation(beanName);
+                            }
+                        }
+                    });
+                    // 返回beanName对应的实例对象
+                    bean = getObjectForBeanInstance(scopedInstance, name, beanName, mbd);
+                } catch (IllegalStateException ex) {
+                    throw new BeanCreationException(beanName,
+                            "Scope '" + scopeName + "' is not active for the current thread; consider " +
+                                    "defining a scoped proxy for this bean if you intend to refer to it from a singleton",
+                            ex);
+                }
+            }
+        } catch (BeansException ex) {
+            // 如果创建bean实例过程中出现异常，则将beanName从alreadyCreated缓存中移除
+            cleanupAfterBeanCreationFailure(beanName);
+            throw ex;
+        }
+    }
+ 
+    // Check if required type matches the type of the actual bean instance.
+    // 检查所需类型是否与实际的bean对象的类型匹配
+    if (requiredType != null && bean != null && !requiredType.isInstance(bean)) {
+        try {
+            // 类型不对，则尝试转换bean类型
+            return getTypeConverter().convertIfNecessary(bean, requiredType);
+        } catch (TypeMismatchException ex) {
+            if (logger.isDebugEnabled()) {
+                logger.debug("Failed to convert bean '" + name + "' to required type '" +
+                        ClassUtils.getQualifiedName(requiredType) + "'", ex);
+            }
+            throw new BeanNotOfRequiredTypeException(name, requiredType, bean.getClass());
+        }
+    }
+    // 返回创建出来的bean实例对象
+    return (T) bean;
+}
+```
+
+
+
+1. transformedBeanName(name)，解析 beanName，主要是解析别名、去掉 FactoryBean 的修饰符 “&”。
+2. **尝试从缓存中获取 beanName 对应的实例**
+3. 如果beanName的实例存在于缓存中，则返回beanName对应的实例对象（主要用于FactoryBean的特殊处理，普通Bean会直接返回sharedInstance本身）
+
+4. scope为prototype的循环依赖校验：如果beanName已经正在创建Bean实例中，而此时我们又要再一次创建beanName的实例，则代表出现了循环依赖，需要抛出异常
+5. 如果parentBeanFactory（父工厂）存在，并且beanName在当前BeanFactory不存在Bean定义，则**尝试从parentBeanFactory中获取bean实例**。
+6. **拿到当前bean依赖的bean名称集合，在实例化自己之前，需要先实例化自己依赖的bean（重点）**
+7. **getSingleton创建单例bean**，把beanName 和一个 singletonFactory 并且传入一个回调对象用于回调。
+
+
+
+## 3.1 用于FactoryBean的解析：transformedBeanName(name)
+
+**将 name 真正解析成真正的 beanName，主要是去掉 FactoryBean 里的 “&” 前缀，和解析别名**
+
+```java
+protected String transformedBeanName(String name) {
+    return canonicalName(BeanFactoryUtils.transformedBeanName(name));
+}
+ 
+public static String transformedBeanName(String name) {
+    Assert.notNull(name, "'name' must not be null");
+    String beanName = name;
+    // 如果beanName带有 "&" 前缀，则去掉
+    while (beanName.startsWith(BeanFactory.FACTORY_BEAN_PREFIX)) {
+        beanName = beanName.substring(BeanFactory.FACTORY_BEAN_PREFIX.length());
+    }
+    return beanName;
+}
+ 
+public String canonicalName(String name) {
+    String canonicalName = name;
+    // Handle aliasing...
+    String resolvedName;
+    do {
+        // 将别名解析成真正的beanName
+        resolvedName = this.aliasMap.get(canonicalName);
+        if (resolvedName != null) {
+            canonicalName = resolvedName;
+        }
+    }
+    while (resolvedName != null);
+    return canonicalName;
+}
+```
+
+## 3.2 getSingleton(beanName)
+
+**尝试从缓存中获取 beanName 对应的实例**
+
+```java
+/**
+ * 这里可能返回一个null（IOC容器加载单实例bean的时候,第一次进来是返回null）
+ * 也有可能返回一个单例对象(IOC容器加载了单实例了,第二次来获取当前的Bean)
+ * 也可能返回一个早期对象(用于解决循环依赖问题)
+ */
+@Nullable
+protected Object getSingleton(String beanName, boolean allowEarlyReference) {
+	/**
+	 * 第一步:我们尝试去一级缓存(单例缓存池中去获取对象,一般情况从该map中获取的对象是直接可以使用的)
+	 * IOC容器初始化加载单实例bean的时候第一次进来的时候，该map中一般返回空
+	 */
+	Object singletonObject = this.singletonObjects.get(beanName);
+	/**
+	 * 若在第一级缓存中没有获取到对象,并且singletonsCurrentlyInCreation这个list包含该beanName
+	 * IOC容器初始化加载单实例bean的时候第一次进来的时候 该list中一般返回空,但是循环依赖的时候可以满足该条件
+	 */
+	if (singletonObject == null && isSingletonCurrentlyInCreation(beanName)) {
+		synchronized (this.singletonObjects) {
+			/**
+			 * 尝试去二级缓存中获取对象(二级缓存中的对象是一个早期对象)
+			 * 何为早期对象:就是bean刚刚调用了构造方法，还来不及给bean的属性进行赋值的对象(纯净态)
+			 * 就是早期对象
+			 */
+			singletonObject = this.earlySingletonObjects.get(beanName);
+			/**
+			 * 二级缓存中也没有获取到对象,allowEarlyReference为true(参数是有上一个方法传递进来的true)
+			 */
+			if (singletonObject == null && allowEarlyReference) {
+				/**
+				 * 直接从三级缓存中获取 ObjectFactory对象 这个对接就是用来解决循环依赖的关键所在
+				 * 在ioc后期的过程中,当bean调用了构造方法的时候,把早期对象包裹成一个ObjectFactory
+				 * 暴露到三级缓存中
+				 */
+				ObjectFactory<?> singletonFactory = this.singletonFactories.get(beanName);
+				// 从三级缓存中获取到对象不为空
+				if (singletonFactory != null) {
+					/**
+					 * 在这里通过暴露的ObjectFactory 包装对象中,通过调用他的getObject()来获取我们的早期对象
+					 * 在这个环节中会调用到 getEarlyBeanReference()来进行后置处理
+					 */
+					singletonObject = singletonFactory.getObject();
+					// 把早期对象放置在二级缓存,
+					this.earlySingletonObjects.put(beanName, singletonObject);
+					// ObjectFactory 包装对象从三级缓存中删除掉
+					this.singletonFactories.remove(beanName);
+				}
+			}
+		}
+	}
+	return singletonObject;
+}
+```
+
+
+
+# 四、getSingleton(beanName,singletonFactory)
+
+
+
+```java
+public Object getSingleton(String beanName, ObjectFactory<?> singletonFactory) {
+    Assert.notNull(beanName, "'beanName' must not be null");
+    // 加锁，避免重复创建单例对象
+    synchronized (this.singletonObjects) {
+        // 1.首先检查beanName对应的bean实例是否在缓存中存在（一级缓存），如果已经存在，则直接返回
+        Object singletonObject = this.singletonObjects.get(beanName);
+        if (singletonObject == null) {
+            // 2.beanName对应的bean实例不存在于缓存中，则进行Bean的创建
+            if (this.singletonsCurrentlyInDestruction) {
+                // 当bean工厂的单例处于destruction状态时，不允许进行单例bean创建，抛出异常
+                throw new BeanCreationNotAllowedException(beanName,
+                        "Singleton bean creation not allowed while singletons of this factory are in destruction " +
+                                "(Do not request a bean from a BeanFactory in a destroy method implementation!)");
+            }
+            if (logger.isDebugEnabled()) {
+                logger.debug("Creating shared instance of singleton bean '" + beanName + "'");
+            }
+            // 3.创建单例前的操作，将beanName加入singletonsCurrentlyInCreation（该集合用户缓存当前正在创建bean的名称）
+            beforeSingletonCreation(beanName);
+            boolean newSingleton = false;
+            // suppressedExceptions用于记录异常相关信息
+            boolean recordSuppressedExceptions = (this.suppressedExceptions == null);
+            if (recordSuppressedExceptions) {
+                this.suppressedExceptions = new LinkedHashSet<Exception>();
+            }
+            try {
+                // 4.执行singletonFactory的getObject方法获取bean实例，其实是调用createBean()方法
+                singletonObject = singletonFactory.getObject();
+                // 标记为新的单例对象
+                newSingleton = true;
+            } catch (IllegalStateException ex) {
+                // Has the singleton object implicitly appeared in the meantime ->
+                // if yes, proceed with it since the exception indicates that state.
+                singletonObject = this.singletonObjects.get(beanName);
+                if (singletonObject == null) {
+                    throw ex;
+                }
+            } catch (BeanCreationException ex) {
+                if (recordSuppressedExceptions) {
+                    for (Exception suppressedException : this.suppressedExceptions) {
+                        ex.addRelatedCause(suppressedException);
+                    }
+                }
+                throw ex;
+            } finally {
+                if (recordSuppressedExceptions) {
+                    this.suppressedExceptions = null;
+                }
+                // 5.创建单例后的操作，把singletonsCurrentlyInCreation标记正在创建的bean从集合中移除
+                afterSingletonCreation(beanName);
+            }
+            if (newSingleton) {
+                // 6.如果是新的单例对象，将beanName和对应的bean实例添加到缓存中（singletonObjects、registeredSingletons）
+                addSingleton(beanName, singletonObject);
+            }
+        }
+        // 返回创建出来的单例对象
+        return (singletonObject != NULL_OBJECT ? singletonObject : null);
+    }
+}
+```
+
+1. 首先检查beanName对应的bean实例是否在缓存中存在（一级缓存），如果已经存在，则直接返回。
+2. beanName对应的bean实例不存在于缓存中，则进行Bean的创建。
+3. beforeSingletonCreation(beanName)，创建单例前的操作，将beanName加入singletonsCurrentlyInCreation（该集合用户缓存当前正在创建bean的名称）
+4. **执行singletonFactory的getObject方法获取bean实例，其实是调用createBean()方法**
+5. afterSingletonCreation(beanName)，创建单例后的操作，把singletonsCurrentlyInCreation标记正在创建的bean从集合中移除。
+6. addSingleton(beanName, singletonObject)，如果是新的单例对象，将beanName和对应的bean实例添加到缓存中。
+
+
+
+## 4.1 创建单例前操作：beforeSingletonCreation(name)
+
+`inCreationCheckExclusions` 是要在创建检查排除掉的 beanName 集合，正常为空，可以不管。这边主要是引入了 `singletonsCurrentlyInCreation` 缓存：当前正在创建的 bean 的 beanName 集合。在 beforeSingletonCreation() 方法中，通过添加 beanName 到该缓存，可以预防出现构造器循环依赖的情况
+
+```java
+protected void beforeSingletonCreation(String beanName) {
+    // 先校验beanName是否为要在创建检查排除掉的（inCreationCheckExclusions缓存），如果不是，
+    // 则将beanName加入到正在创建bean的缓存中（Set），如果beanName已经存在于该缓存，会返回false抛出异常（这种情况出现在构造器的循环依赖）
+    if (!this.inCreationCheckExclusions.contains(beanName) && !this.singletonsCurrentlyInCreation.add(beanName)) {
+        throw new BeanCurrentlyInCreationException(beanName);
+    }
+}
+```
+
+
+
+## 4.2 singletonFactory.getObject()
+
+执行singletonFactory的getObject()方法获取bean实例，其实是调用`createBean()`方法
+
+```java
+singletonObject = singletonFactory.getObject();
+```
+
+```java
+//把beanName 和一个singletonFactory 并且传入一个回调对象用于回调
+sharedInstance = getSingleton(beanName, () -> {
+   try {
+      //进入创建bean的逻辑
+      return createBean(beanName, mbd, args);
+   }
+   catch (BeansException ex) {
+      //创建bean的过程中发生异常,需要销毁关于当前bean的所有信息
+      destroySingleton(beanName);
+      throw ex;
+   }
+});
+```
+
+
+
+## 4.3 创建单例后的操作：afterSingletonCreation(name)
+
+**创建单例后的操作，把singletonsCurrentlyInCreation标记正在创建的bean从集合中移除**
+
+```java
+protected void afterSingletonCreation(String beanName) {
+    // 先校验beanName是否为要在创建检查排除掉的（inCreationCheckExclusions缓存），如果不是，
+    // 则将beanName从正在创建bean的缓存中（Set）移除，如果beanName不存在于该缓存，会返回false抛出异常
+    if (!this.inCreationCheckExclusions.contains(beanName) && !this.singletonsCurrentlyInCreation.remove(beanName)) {
+        throw new IllegalStateException("Singleton '" + beanName + "' isn't currently in creation");
+    }
+}
+```
+
+
+
+## 4.4 添加到缓存中：addSingleton(beanName, singletonObject)
+
+**把对象加入到单例缓存池中(所谓的一级缓存 并且考虑循环依赖和正常情况下,移除二三级缓存)**
+
+```java
+/**
+ * 把对象加入到单例缓存池中(所谓的一级缓存 并且考虑循环依赖和正常情况下,移除二三级缓存)
+ * @param beanName bean的名称
+ * @param singletonObject 创建出来的单实例bean
+ */
+protected void addSingleton(String beanName, Object singletonObject) {
+	synchronized (this.singletonObjects) {
+		//加入到单例缓存池中
+		this.singletonObjects.put(beanName, singletonObject);
+		//从三级缓存中移除(针对的不是处理循环依赖的)
+		this.singletonFactories.remove(beanName);
+		//从二级缓存中移除(循环依赖的时候 早期对象存在于二级缓存)
+		this.earlySingletonObjects.remove(beanName);
+		//用来记录保存已经处理的bean
+		this.registeredSingletons.add(beanName);
+	}
+}
+```
+
+
+
+# 五、createBean(beanName, mbd, args)
+
+```java
+@Override
+protected Object createBean(String beanName, RootBeanDefinition mbd, Object[] args) throws BeanCreationException {
+    if (logger.isDebugEnabled()) {
+        logger.debug("Creating instance of bean '" + beanName + "'");
+    }
+    RootBeanDefinition mbdToUse = mbd;
+    // 解析beanName对应的Bean的类型，例如：com.joonwhee.open.demo.service.impl.UserServiceImpl
+    Class<?> resolvedClass = resolveBeanClass(mbd, beanName);
+    if (resolvedClass != null && !mbd.hasBeanClass() && mbd.getBeanClassName() != null) {
+        // 如果resolvedClass存在，并且mdb的beanClass类型不是Class，并且mdb的beanClass不为空（则代表beanClass存的是Class的name）,
+        // 则使用mdb深拷贝一个新的RootBeanDefinition副本，并且将解析的Class赋值给拷贝的RootBeanDefinition副本的beanClass属性，
+        // 该拷贝副本取代mdb用于后续的操作
+        mbdToUse = new RootBeanDefinition(mbd);
+        mbdToUse.setBeanClass(resolvedClass);
+    }
+ 
+    // Prepare method overrides.
+    try {
+        // 验证及准备覆盖的方法（对override属性进行标记及验证）
+        mbdToUse.prepareMethodOverrides();
+    } catch (BeanDefinitionValidationException ex) {
+        throw new BeanDefinitionStoreException(mbdToUse.getResourceDescription(),
+                beanName, "Validation of method overrides failed", ex);
+    }
+ 
+    try {
+        // 1.实例化前的处理，给InstantiationAwareBeanPostProcessor一个机会返回代理对象来替代真正的bean实例，达到“短路”效果
+        Object bean = resolveBeforeInstantiation(beanName, mbdToUse);
+        // 如果bean不为空，则会跳过Spring默认的实例化过程，直接使用返回的bean
+        if (bean != null) {
+            return bean;
+        }
+    } catch (Throwable ex) {
+        throw new BeanCreationException(mbdToUse.getResourceDescription(), beanName,
+                "BeanPostProcessor before instantiation of bean failed", ex);
+    }
+	try {
+        // 2.该步骤是我们真正的创建我们的bean的实例对象的过程
+		Object beanInstance = doCreateBean(beanName, mbdToUse, args);
+		if (logger.isDebugEnabled()) {
+			logger.debug("Finished creating instance of bean '" + beanName + "'");
+		}
+		return beanInstance;
+	}
+	catch (BeanCreationException | ImplicitlyAppearedSingletonException ex) {
+		throw ex;
+	}
+	catch (Throwable ex) {
+		throw new BeanCreationException(
+				mbdToUse.getResourceDescription(), beanName, "Unexpected exception during bean creation", ex);
+	}
+}
+```
+
+
+
+* 实例化前的处理，给 InstantiationAwareBeanPostProcessor 一个机会返回代理对象来替代真正的 bean 实例，从而跳过 Spring 默认的实例化过程，达到“短路”效果。
+* **doCreateBean(beanName, mbdToUse, args)，真正的创建我们的bean的实例对象的过程**
+
+
+
+## 5.1 实例化前处理：resolveBeforeInstantiation(beanName, mbdToUse)
+
+```java
+protected Object resolveBeforeInstantiation(String beanName, RootBeanDefinition mbd) {
+    Object bean = null;
+    if (!Boolean.FALSE.equals(mbd.beforeInstantiationResolved)) {
+        // mbd不是合成的，并且BeanFactory中存在InstantiationAwareBeanPostProcessor
+        if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+            // 解析beanName对应的Bean实例的类型
+            Class<?> targetType = determineTargetType(beanName, mbd);
+            if (targetType != null) {
+                // 1、实例化前的后置处理器应用（处理InstantiationAwareBeanPostProcessor）
+                // 调用InstantiationAwareBeanPostProcessor.postProcessBeforeInstantiation(beanClass, beanName)，尝试直接返回对象
+                bean = applyBeanPostProcessorsBeforeInstantiation(targetType, beanName);
+                //说明生成了代理对象那么我们就调用
+                if (bean != null) {
+                    // 2、如果返回的bean不为空，会跳过Spring默认的实例化过程，
+                    // 所以只能在这里调用BeanPostProcessor实现类的postProcessAfterInitialization方法
+                    bean = applyBeanPostProcessorsAfterInitialization(bean, beanName);
+                }
+            }
+        }
+        // 如果bean不为空，则将beforeInstantiationResolved赋值为true，代表在实例化之前已经解析
+        mbd.beforeInstantiationResolved = (bean != null);
+    }
+    return bean;
+}
+```
+
+* 实例化前的后置处理器应用（第一次调用后置处理器），尝试直接返回对象。
+* 如果返回的bean不为空，会跳过Spring默认的实例化过程，调用BeanPostProcessor实现类的postProcessAfterInitialization方法。
+
+### 5.1.1 applyBeanPostProcessorsBeforeInstantiation()
+
+* **applyBeanPostProcessorsBeforeInstantiation(targetType, beanName)**
+
+* **在实例化之前执行 InstantiationAwareBeanPostProcessor 的 `postProcessBeforeInstantiation`方法（后置处理器第一次调用），该方法可以返回 bean 实例的代理，从而跳过 Spring 默认的实例化过程**
+
+```java
+protected Object applyBeanPostProcessorsBeforeInstantiation(Class<?> beanClass, String beanName) {
+    // 遍历当前BeanFactory中的BeanPostProcessor
+    for (BeanPostProcessor bp : getBeanPostProcessors()) {
+        // 把我们的BeanPostProcessor强制转为InstantiationAwareBeanPostProcessor
+        if (bp instanceof InstantiationAwareBeanPostProcessor) {
+            InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+            // 执行postProcessBeforeInstantiation方法，在Bean实例化前操作，后置处理器的【第一次调用】
+            /**
+            * 【很重要，AOP继续分析】
+            * 我们AOP @EnableAspectJAutoProxy 为我们容器中导入了 AnnotationAwareAspectJAutoProxyCreator
+            * 我们事务注解@EnableTransactionManagement 为我们的容器导入了 InfrastructureAdvisorAutoProxyCreator
+            * 都是实现了我们的 BeanPostProcessor接口,InstantiationAwareBeanPostProcessor,
+            * 进行后置处理解析切面
+            */
+            Object result = ibp.postProcessBeforeInstantiation(beanClass, beanName);
+            if (result != null) {
+                // 如果result不为空，也就是有后置处理器返回了bean实例对象，则会跳过Spring默认的实例化过程
+                return result;
+            }
+        }
+    }
+    return null;
+}
+```
+
+
+
+### 5.1.2 applyBeanPostProcessorsAfterInitialization()
+
+* **applyBeanPostProcessorsAfterInitialization(bean, beanName)**
+
+* **在创建完 bean 实例后，会执行 BeanPostProcessor 的 postProcessAfterInitialization 方法（后置处理器第二次或第九次调用）**
+
+```java
+@Override
+public Object applyBeanPostProcessorsAfterInitialization(Object existingBean, String beanName)
+        throws BeansException {
+ 
+    Object result = existingBean;
+    // 遍历所有注册的BeanPostProcessor实现类，调用postProcessAfterInitialization方法
+    for (BeanPostProcessor beanProcessor : getBeanPostProcessors()) {
+        // 2.在bean初始化后，调用postProcessAfterInitialization方法
+        /**
+        * 在这里是后置处理器的【第九次或第二次调用】 aop和事务都会在这里生存代理对象
+        *
+        * 【很重要】
+        * 我们AOP @EnableAspectJAutoProxy 为我们容器中导入了 AnnotationAwareAspectJAutoProxyCreator
+        * 我们事务注解@EnableTransactionManagement 为我们的容器导入了 InfrastructureAdvisorAutoProxyCreator
+        * 都是实现了我们的 BeanPostProcessor接口,InstantiationAwareBeanPostProcessor,
+        * 在这里实现的是BeanPostProcessor接口的postProcessAfterInitialization来生成我们的代理对象
+        */
+        result = beanProcessor.postProcessAfterInitialization(result, beanName);
+        if (result == null) {
+            // 如果返回null，则不会调用后续的BeanPostProcessors
+            return result;
+        }
+    }
+    return result;
+}
+```
+
+
+
+
+
+# 六、真正创建 bean 实例的方法：doCreateBean()
+
+* **doCreateBean(beanName, mbdToUse, args)**
+
+```java
+protected Object doCreateBean(final String beanName, final RootBeanDefinition mbd, final Object[] args)
+        throws BeanCreationException {
+ 
+    // Instantiate the bean.
+    // BeanWrapper 是对 Bean 的包装
+    BeanWrapper instanceWrapper = null;
+    if (mbd.isSingleton()) {
+        // 如果是FactoryBean，则需要先移除未完成的FactoryBean实例的缓存
+        instanceWrapper = this.factoryBeanInstanceCache.remove(beanName);
+    }
+    if (instanceWrapper == null) {
+        // 1、创建bean实例化 使用合适的实例化策略来创建新的实例：工厂方法、构造函数自动注入、简单初始化 该方法很复杂也很重要
+        instanceWrapper = createBeanInstance(beanName, mbd, args);
+    }
+    // 从beanWrapper中获取我们的早期对象
+    final Object bean = (instanceWrapper != null ? instanceWrapper.getWrappedInstance() : null);
+    // 拿到Bean实例的类型
+    Class<?> beanType = (instanceWrapper != null ? instanceWrapper.getWrappedClass() : null);
+    mbd.resolvedTargetType = beanType;
+ 
+    // Allow post-processors to modify the merged bean definition.
+    synchronized (mbd.postProcessingLock) {
+        if (!mbd.postProcessed) {
+            try {
+                // 2、应用后置处理器MergedBeanDefinitionPostProcessor，允许修改MergedBeanDefinition，
+                // @AutoWired @Value注解正是通过此方法实现注入类型的预解析
+                applyMergedBeanDefinitionPostProcessors(mbd, beanType, beanName);
+            } catch (Throwable ex) {
+                throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+                        "Post-processing of merged bean definition failed", ex);
+            }
+            mbd.postProcessed = true;
+        }
+    }
+ 
+    // Eagerly cache singletons to be able to resolve circular references
+    // even when triggered by lifecycle interfaces like BeanFactoryAware.
+    // 判断是否需要提早曝光早期对象：单例 && 允许循环依赖 && 当前bean正在创建中
+    boolean earlySingletonExposure = (mbd.isSingleton() && this.allowCircularReferences &&
+            isSingletonCurrentlyInCreation(beanName));
+    //上述条件满足，允许早期暴露对象
+    if (earlySingletonExposure) {
+        if (logger.isDebugEnabled()) {
+            logger.debug("Eagerly caching bean '" + beanName +
+                    "' to allow for resolving potential circular references");
+        }
+ 
+        // 3、提前曝光beanName的ObjectFactory，用于解决循环引用
+        // 3.1、应用后置处理器SmartInstantiationAwareBeanPostProcessor，允许返回指定bean的早期引用，若没有则直接返回bean
+        addSingletonFactory(beanName, () -> getEarlyBeanReference(beanName, mbd, bean));
+    }
+ 
+    // Initialize the bean instance.  初始化bean实例。
+    Object exposedObject = bean;
+    try {
+        // 4、属性赋值 给我们的属性进行赋值(调用set方法进行赋值)
+        populateBean(beanName, mbd, instanceWrapper);
+        // 5、进行对象初始化操作(在这里可能生成代理对象)
+		exposedObject = initializeBean(beanName, exposedObject, mbd);
+    } catch (Throwable ex) {
+        if (ex instanceof BeanCreationException && beanName.equals(((BeanCreationException) ex).getBeanName())) {
+            throw (BeanCreationException) ex;
+        } else {
+            throw new BeanCreationException(
+                    mbd.getResourceDescription(), beanName, "Initialization of bean failed", ex);
+        }
+    }
+ 
+    if (earlySingletonExposure) {
+        // 如果允许提前曝光实例，则进行循环依赖检查
+        Object earlySingletonReference = getSingleton(beanName, false);
+        // earlySingletonReference只有在当前解析的bean存在循环依赖的情况下才会不为空
+        if (earlySingletonReference != null) {
+            if (exposedObject == bean) {
+                // 如果exposedObject没有在initializeBean方法中被增强，则不影响之前的循环引用
+                exposedObject = earlySingletonReference;
+            } 
+            //处理依赖的bean
+            else if (!this.allowRawInjectionDespiteWrapping && hasDependentBean(beanName)) {
+                String[] dependentBeans = getDependentBeans(beanName);
+                Set<String> actualDependentBeans = new LinkedHashSet<String>(dependentBeans.length);
+                for (String dependentBean : dependentBeans) {
+                    // 尝试移除这些bean的实例，因为这些bean依赖的bean已经被增强了，他们依赖的bean相当于脏数据
+                    if (!removeSingletonIfCreatedForTypeCheckOnly(dependentBean)) {
+                        // 移除失败的添加到 actualDependentBeans
+                        actualDependentBeans.add(dependentBean);
+                    }
+                }
+ 
+                if (!actualDependentBeans.isEmpty()) {
+                    // 如果存在移除失败的，则抛出异常，因为存在bean依赖了“脏数据”
+                    throw new BeanCurrentlyInCreationException(beanName,
+                            "Bean with name '" + beanName + "' has been injected into other beans [" +
+                                    StringUtils.collectionToCommaDelimitedString(actualDependentBeans) +
+                                    "] in its raw version as part of a circular reference, but has eventually been " +
+                                    "wrapped. This means that said other beans do not use the final version of the " +
+                                    "bean. This is often the result of over-eager type matching - consider using " +
+                                    "'getBeanNamesOfType' with the 'allowEagerInit' flag turned off, for example.");
+                }
+            }
+        }
+    }
+ 
+    // Register bean as disposable.
+    try {
+        // 6、注册用于销毁的bean，执行销毁操作的有三种：自定义destroy方法、DisposableBean接口、DestructionAwareBeanPostProcessor
+        registerDisposableBeanIfNecessary(beanName, bean, mbd);
+    } catch (BeanDefinitionValidationException ex) {
+        throw new BeanCreationException(
+                mbd.getResourceDescription(), beanName, "Invalid destruction signature", ex);
+    }
+    // 完成创建并返回
+    return exposedObject;
+}
+```
+
+1. **createBeanInstance(beanName, mbd, args)，根据 beanName、mbd、args，使用对应的策略创建 bean 实例（bean的实例化），并返回包装类 BeanWrapper。**
+
+2. 应用后置处理器 MergedBeanDefinitionPostProcessor，允许修改 MergedBeanDefinition。
+
+3. **提前曝光 beanName 的 ObjectFactory，用于解决循环引用。**
+   1. 应用后置处理器 SmartInstantiationAwareBeanPostProcessor，允许返回指定 bean 的早期引用
+
+4. **对 bean 进行属性填充**；其中，可能存在依赖于其他 bean 的属性，则会递归初始化依赖的 bean 实例
+
+5. **对 bean 进行初始化**
+6. registerDisposableBeanIfNecessary(beanName, bean, mbd)，注册用于销毁的bean
+
+## 6.1 实例化：createBeanInstance(beanName, mbd, args)
+
+**创建bean实例化 使用合适的实例化策略来创建新的实例：工厂方法、构造函数自动注入、简单初始化 该方法很复杂也很重要**
+
+```java
+protected BeanWrapper createBeanInstance(String beanName, RootBeanDefinition mbd, @Nullable Object[] args) {
+		//首先确保bean 已经被解析过
+		Class<?> beanClass = resolveBeanClass(mbd, beanName);
+        // 如果beanClass 不是public 类型，那么就 抛出异常，提示   non-public access not allowed
+		if (beanClass != null && !Modifier.isPublic(beanClass.getModifiers()) && !mbd.isNonPublicAccessAllowed()) {
+			throw new BeanCreationException(mbd.getResourceDescription(), beanName,
+					"Bean class isn't public, and non-public access not allowed: " + beanClass.getName());
+		}
+        //如果存在 Supplier 回调，则使用给定的回调方法初始化策略
+		Supplier<?> instanceSupplier = mbd.getInstanceSupplier();
+		if (instanceSupplier != null) {
+		   // 这里转换成 BeanWrapper  类型
+			return obtainFromSupplier(instanceSupplier, beanName);
+		}
+        /**
+         * 1、@Bean、工厂方法 可能会调用此方法进行创建出来
+         * 工厂方法,我们通过配置类来进行配置的话 采用的就是工厂方法,方法名称就是tulingDao就是我们工厂方法的名称
+         *  Bean
+            public TulingDao tulingDao() {
+
+                return new TulingDao(tulingDataSource());
+            }
+         */
+		if (mbd.getFactoryMethodName() != null) {
+			return instantiateUsingFactoryMethod(beanName, mbd, args);
+		}
+
+		// 快速创建Shortcut when re-creating the same bean...
+		boolean resolved = false;
+		boolean autowireNecessary = false;
+		if (args == null) {
+			synchronized (mbd.constructorArgumentLock) {
+				if (mbd.resolvedConstructorOrFactoryMethod != null) {
+					resolved = true;
+					autowireNecessary = mbd.constructorArgumentsResolved;
+				}
+			}
+		}
+		if (resolved) {
+			if (autowireNecessary) {
+				return autowireConstructor(beanName, mbd, null, null);
+			}
+			else {
+				return instantiateBean(beanName, mbd);
+			}
+		}
+
+		// Candidate constructors for autowiring?
+		// 2、后置处理器有机会在这里决定当前bean用哪个构造器
+		/**
+		  具体里面其实 是 SmartInstantiationAwareBeanPostProcessor , 这个类 继承了
+		  InstantiationAwareBeanPostProcessor， 调用里面的determineCandidateConstructors 方法 
+		  来确认有没有指定的构造函数
+		*/
+		Constructor<?>[] ctors = determineConstructorsFromBeanPostProcessors(beanClass, beanName);
+		if (ctors != null || mbd.getResolvedAutowireMode() == AUTOWIRE_CONSTRUCTOR ||
+				mbd.hasConstructorArgumentValues() || !ObjectUtils.isEmpty(args)) {
+			// 构造函数自动注入
+			return autowireConstructor(beanName, mbd, ctors, args);
+		}
+
+		// 3、使用默认的自己设置的高优先级的构造器（如果有）。 如有必要，构造函数参数将自动装配。
+		ctors = mbd.getPreferredConstructors();
+		if (ctors != null) {
+			return autowireConstructor(beanName, mbd, ctors, null);
+		}
+
+		// 4、默认使用无参构造函数
+		return instantiateBean(beanName, mbd);
+	}
+
+```
+
+创建实例的方法通常有以下几种：工厂方法、构造函数自动装配（通常指带有参数的构造函数）、简单实例化（默认的构造函数）。
+
+1. @Bean、工厂方法实例化
+2. **后置处理器SmartInstantiationAwareBeanPostProcessor.determineCandidateConstructors()有机会在这里决定当前bean用哪个构造器**
+3. 使用默认的自己设置的高优先级的构造器
+4. **默认使用无参构造函数**
+
+
+
+## 6.2 applyMergedBeanDefinitionPostProcessors
+
+* **应用后置处理器 MergedBeanDefinitionPostProcessor.postProcessMergedBeanDefinition()，允许修改 `MergedBeanDefinition`。**
+* **其中后置处理器`AutowiredAnnotationBeanPostProcessor`对@Autowire注解进行预解析**
+
+```java
+protected void applyMergedBeanDefinitionPostProcessors(RootBeanDefinition mbd, Class<?> beanType, String beanName) {
+    // 1.获取BeanFactory中已注册的BeanPostProcessor
+    for (BeanPostProcessor bp : getBeanPostProcessors()) {
+        if (bp instanceof MergedBeanDefinitionPostProcessor) {
+            // 2.调用MergedBeanDefinitionPostProcessor的postProcessMergedBeanDefinition方法，
+            // 对指定bean的给定MergedBeanDefinition进行后置处理，@Autowire注解在这边对元数据进行预解析
+            MergedBeanDefinitionPostProcessor bdp = (MergedBeanDefinitionPostProcessor) bp;
+            bdp.postProcessMergedBeanDefinition(mbd, beanType, beanName);
+        }
+    }
+}
+```
+
+
+
+## 6.3 提前暴露对象：addSingletonFactory(name,singletonFactory) 
+
+**通过提前曝光的 ObjectFactory 获得 “不完整” 的 bean 实例，从而解决循环引用的问题**
+
+```java
+protected void addSingletonFactory(String beanName, ObjectFactory<?> singletonFactory) {
+    Assert.notNull(singletonFactory, "Singleton factory must not be null");
+    synchronized (this.singletonObjects) {
+        // 1.如果beanName不存在于singletonObjects（一级缓存）中
+        if (!this.singletonObjects.containsKey(beanName)) {
+            // 2.将beanName和singletonFactory注册到singletonFactories缓存（beanName -> 该beanName的单例工厂），暴露早期对象用于解决循环依赖
+            this.singletonFactories.put(beanName, singletonFactory);
+            // 3.移除earlySingletonObjects缓存中的beanName（beanName -> beanName的早期单例对象）
+            this.earlySingletonObjects.remove(beanName);
+            // 4.将beanName注册到registeredSingletons缓存（已经注册的单例集合）
+            this.registeredSingletons.add(beanName);
+        }
+    }
+}
+```
+
+
+
+## 6.4 获取早期引用：getEarlyBeanReference()
+
+* **应用后置处理器 SmartInstantiationAwareBeanPostProcessor的getEarlyBeanReference，允许返回指定 bean 的早期引用**
+* **该方法一般用于循环引用中从三级缓存中获取早期曝光对象**
+
+* **其中AOP的AbstractAutoProxyCreator.getEarlyBeanReference()方法也在此执行，但只有循环引用的对象为代理对象的时候才会进行动态代理**
+
+```java
+protected Object getEarlyBeanReference(String beanName, RootBeanDefinition mbd, Object bean) {
+    Object exposedObject = bean;
+    // 1.如果bean不为空 && mbd不是合成 && 存在InstantiationAwareBeanPostProcessors
+    if (bean != null && !mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+        for (BeanPostProcessor bp : getBeanPostProcessors()) {
+            // 2.应用所有SmartInstantiationAwareBeanPostProcessor，调用getEarlyBeanReference方法
+            if (bp instanceof SmartInstantiationAwareBeanPostProcessor) {
+                SmartInstantiationAwareBeanPostProcessor ibp = (SmartInstantiationAwareBeanPostProcessor) bp;
+                // 3.允许SmartInstantiationAwareBeanPostProcessor返回指定bean的早期引用
+                //其中AOP的AbstractAutoProxyCreator.getEarlyBeanReference()方法也在此执行，但只有循环引用的对象为代理对象的时候才会进行动态代理
+                exposedObject = ibp.getEarlyBeanReference(exposedObject, beanName);
+                if (exposedObject == null) {
+                    return null;
+                }
+            }
+        }
+    }
+    // 4.返回要作为bean引用公开的对象，如果没有SmartInstantiationAwareBeanPostProcessor修改，则返回的是入参的bean对象本身
+    return exposedObject;
+}
+```
+
+
+
+## 6.5 属性赋值：populateBean(beanName, mbd, instanceWrapper)
+
+```java
+protected void populateBean(String beanName, RootBeanDefinition mbd, @Nullable BeanWrapper bw) {
+	//若bw为null的话,则说明对象没有实例化
+	if (bw == null) {
+		//进入if 说明对象有属性，bw为空,不能为他设置属性，那就在下面就执行抛出异常
+		if (mbd.hasPropertyValues()) {
+			throw new BeanCreationException(
+					mbd.getResourceDescription(), beanName, "Cannot apply property values to null instance");
+		}
+		else {
+			// Skip property population phase for null instance.
+			return;
+		}
+	}
+
+	/**
+	 * 在属性被填充前，给 InstantiationAwareBeanPostProcessor 类型的后置处理器一个修改
+	 * bean 状态的机会。
+	 * 官方的解释是：让用户可以自定义属性注入。比如用户实现一
+	 * 个 InstantiationAwareBeanPostProcessor 类型的后置处理器，并通过
+	 * postProcessAfterInstantiation 方法向 bean 的成员变量注入自定义的信息。
+	 */
+	boolean continueWithPropertyPopulation = true;
+	//是否持有 InstantiationAwareBeanPostProcessor
+	if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+		//获取容器中的所有的BeanPostProcessor
+		for (BeanPostProcessor bp : getBeanPostProcessors()) {
+			//判断我们的后置处理器是不是InstantiationAwareBeanPostProcessor
+			if (bp instanceof InstantiationAwareBeanPostProcessor) {
+				InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+				//1、在bean实例化后，属性填充之前被调用，允许修改bean的属性，如果返回false，则跳过之后的属性填充
+				if (!ibp.postProcessAfterInstantiation(bw.getWrappedInstance(), beanName)) {
+					// 一般情况下，应该是返回true 。
+					// 返回 false 的话，将会阻止在此 Bean 实例上调用任何后续的 InstantiationAwareBeanPostProcessor 实
+					continueWithPropertyPopulation = false;
+					break;
+				}
+			}
+		}
+	}
+	// 如果后续处理器发出停止填充命令，则终止后续操作
+	if (!continueWithPropertyPopulation) {
+		return;
+	}
+
+	//获取bean定义的属性
+	PropertyValues pvs = (mbd.hasPropertyValues() ? mbd.getPropertyValues() : null);
+
+	/**
+	 * 判断我们的bean的属性注入模型
+	 * AUTOWIRE_BY_NAME 根据名称注入
+	 * AUTOWIRE_BY_TYPE 根据类型注入
+	 */
+
+	if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME || mbd.getResolvedAutowireMode() == AUTOWIRE_BY_TYPE) {
+		//把PropertyValues封装成为MutablePropertyValues
+		MutablePropertyValues newPvs = new MutablePropertyValues(pvs);
+		//2、根据bean的属性名称注入
+		if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_NAME) {
+			autowireByName(beanName, mbd, bw, newPvs);
+		}
+		//3、根据bean的类型进行注入
+		if (mbd.getResolvedAutowireMode() == AUTOWIRE_BY_TYPE) {
+			autowireByType(beanName, mbd, bw, newPvs);
+		}
+		//把处理过的 属性覆盖原来的
+		pvs = newPvs;
+	}
+
+	/**
+	 * 这里又是一种后置处理，用于在 Spring 填充属性到 bean 对象前，对属性的值进行相应的处理，
+	 * 比如可以修改某些属性的值。这时注入到 bean 中的值就不是配置文件中的内容了，而是经过后置处理器修改后的内容
+	 */
+    //BeanFactory是否注册过InstantiationAwareBeanPostProcessors
+	boolean hasInstAwareBpps = hasInstantiationAwareBeanPostProcessors();
+	//判断是否需要检查依赖
+	boolean needsDepCheck = (mbd.getDependencyCheck() != AbstractBeanDefinition.DEPENDENCY_CHECK_NONE);
+
+	if (hasInstAwareBpps || needsDepCheck) {
+		if (pvs == null) {
+			pvs = mbd.getPropertyValues();
+		}
+		//提出当前正在创建的beanWrapper 依赖的对象
+		PropertyDescriptor[] filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
+		if (hasInstAwareBpps) {
+			//获取所有的后置处理器
+			for (BeanPostProcessor bp : getBeanPostProcessors()) {
+				if (bp instanceof InstantiationAwareBeanPostProcessor) {
+					InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+					//4、应用后置处理器InstantiationAwareBeanPostProcessor的方法postProcessPropertyValues，进行属性填充前的再次处理
+					pvs = ibp.postProcessPropertyValues(pvs, filteredPds, bw.getWrappedInstance(), beanName);
+					if (pvs == null) {
+						return;
+					}
+				}
+			}
+		}
+		//判断是否检查依赖
+		if (needsDepCheck) {
+			checkDependencies(beanName, mbd, filteredPds, pvs);
+		}
+	}
+
+	if (pvs != null) {
+        //5、将所有PropertyValues中的属性填充到bean中
+		applyPropertyValues(beanName, mbd, bw, pvs);
+	}
+}
+```
+
+1. 在bean实例化后，属性填充之前被调用，通过后置处理器InstantiationAwareBeanPostProcessor，允许修改bean的属性，如果返回false，则跳过之后的属性填充
+2. autowireByName(beanName, mbd, bw, newPvs)根据bean的属性名称注入
+3. autowireByType(beanName, mbd, bw, newPvs)根据bean的类型进行注入
+4. **应用后置处理器InstantiationAwareBeanPostProcessor的方法postProcessPropertyValues，进行属性填充前的再次处理**
+5. 将所有PropertyValues中的属性填充到bean中
+
+### 6.5.1 ibp.postProcessAfterInstantiation()
+
+* **InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(Object bean, String beanName)：实例化之后进行处理，可以对bean进行一些修改。（返回false则bean的赋值全部结束）**
+
+```java
+	/**
+	 * 在属性被填充前，给 InstantiationAwareBeanPostProcessor 类型的后置处理器一个修改
+	 * bean 状态的机会。
+	 * 官方的解释是：让用户可以自定义属性注入。比如用户实现一
+	 * 个 InstantiationAwareBeanPostProcessor 类型的后置处理器，并通过
+	 * postProcessAfterInstantiation 方法向 bean 的成员变量注入自定义的信息。
+	 */
+	boolean continueWithPropertyPopulation = true;
+	//是否持有 InstantiationAwareBeanPostProcessor
+	if (!mbd.isSynthetic() && hasInstantiationAwareBeanPostProcessors()) {
+		//获取容器中的所有的BeanPostProcessor
+		for (BeanPostProcessor bp : getBeanPostProcessors()) {
+			//判断我们的后置处理器是不是InstantiationAwareBeanPostProcessor
+			if (bp instanceof InstantiationAwareBeanPostProcessor) {
+				InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+				//1、在bean实例化后，属性填充之前被调用，允许修改bean的属性，如果返回false，则跳过之后的属性填充
+				if (!ibp.postProcessAfterInstantiation(bw.getWrappedInstance(), beanName)) {
+					// 一般情况下，应该是返回true 。
+					// 返回 false 的话，将会阻止在此 Bean 实例上调用任何后续的 InstantiationAwareBeanPostProcessor 实
+					continueWithPropertyPopulation = false;
+					break;
+				}
+			}
+		}
+	}
+	// 如果后续处理器发出停止填充命令，则终止后续操作
+	if (!continueWithPropertyPopulation) {
+		return;
+	}
+```
+
+
+
+### 6.5.2 根据属性名称注入：autowireByName（待补）
+
+```java
+protected void autowireByName(
+        String beanName, AbstractBeanDefinition mbd, BeanWrapper bw, MutablePropertyValues pvs) {
+ 
+    // 1.寻找bw中需要依赖注入的属性
+    String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
+    for (String propertyName : propertyNames) {
+        // 2.校验是否存在beanName=propertyName的bean实例或者BeanDefinition
+        if (containsBean(propertyName)) {
+            // 3.获取propertyName的bean实例对象
+            Object bean = getBean(propertyName);
+            // 4.将属性名和属性值添加到pvs
+            pvs.add(propertyName, bean);
+            // 5.注册依赖关系到缓存（beanName依赖propertyName）
+            registerDependentBean(propertyName, beanName);
+            if (logger.isDebugEnabled()) {
+                logger.debug("Added autowiring by name from bean name '" + beanName +
+                        "' via property '" + propertyName + "' to bean named '" + propertyName + "'");
+            }
+        } else {
+            if (logger.isTraceEnabled()) {
+                logger.trace("Not autowiring property '" + propertyName + "' of bean '" + beanName +
+                        "' by name: no matching bean found");
+            }
+        }
+    }
+}
+```
+
+
+
+### 6.5.3 根据类型进行注入：autowireByType（待补）
+
+```java
+protected void autowireByType(
+        String beanName, AbstractBeanDefinition mbd, BeanWrapper bw, MutablePropertyValues pvs) {
+ 
+    TypeConverter converter = getCustomTypeConverter();
+    if (converter == null) {
+        converter = bw;
+    }
+ 
+    Set<String> autowiredBeanNames = new LinkedHashSet<String>(4);
+    // 1.寻找bw中需要依赖注入的属性
+    String[] propertyNames = unsatisfiedNonSimpleProperties(mbd, bw);
+    // 2.遍历所有需要依赖注入的属性
+    for (String propertyName : propertyNames) {
+        try {
+            PropertyDescriptor pd = bw.getPropertyDescriptor(propertyName);
+            // Don't try autowiring by type for type Object: never makes sense,
+            // even if it technically is a unsatisfied, non-simple property.
+            if (Object.class != pd.getPropertyType()) {
+                // 3.获取指定属性的set方法，封装成MethodParameter（必须有set方法才能通过属性来注入）
+                MethodParameter methodParam = BeanUtils.getWriteMethodParameter(pd);
+                // Do not allow eager init for type matching in case of a prioritized post-processor.
+                boolean eager = !PriorityOrdered.class.isAssignableFrom(bw.getWrappedClass());
+                // 4.将MethodParameter的方法参数索引信息封装成DependencyDescriptor
+                DependencyDescriptor desc = new AutowireByTypeDependencyDescriptor(methodParam, eager);
+                // 5.解析当前属性所匹配的bean实例，并把解析到的bean实例的beanName存储在autowiredBeanNames中
+                Object autowiredArgument = resolveDependency(desc, beanName, autowiredBeanNames, converter);
+                if (autowiredArgument != null) {
+                    // 6.如果找到了依赖的bean实例，将属性名和bean实例放到pvs中
+                    pvs.add(propertyName, autowiredArgument);
+                }
+                for (String autowiredBeanName : autowiredBeanNames) {
+                    // 7.注册依赖关系，beanName依赖autowiredBeanName
+                    registerDependentBean(autowiredBeanName, beanName);
+                    if (logger.isDebugEnabled()) {
+                        logger.debug("Autowiring by type from bean name '" + beanName + "' via property '" +
+                                propertyName + "' to bean named '" + autowiredBeanName + "'");
+                    }
+                }
+                autowiredBeanNames.clear();
+            }
+        } catch (BeansException ex) {
+            throw new UnsatisfiedDependencyException(mbd.getResourceDescription(), beanName, propertyName, ex);
+        }
+    }
+}
+```
+
+
+
+### 6.5.4 自动装配功能：ibp.postProcessPropertyValues()
+
+* **应用后置处理器 InstantiationAwareBeanPostProcessor 的方法 postProcessPropertyValues，进行属性填充前的再次处理。**
+* **Spring的自动装配后置处理器，AutowiredAnnotationBeanPostProcessor.postProcessProperties(pvs, bw.getWrappedInstance(), beanName)在此工作，真正进行<font color='red'>自动装配</font>。**
+
+```java
+	/**
+	 * 这里又是一种后置处理，用于在 Spring 填充属性到 bean 对象前，对属性的值进行相应的处理，
+	 * 比如可以修改某些属性的值。这时注入到 bean 中的值就不是配置文件中的内容了，而是经过后置处理器修改后的内容
+	 */
+    //BeanFactory是否注册过InstantiationAwareBeanPostProcessors
+	boolean hasInstAwareBpps = hasInstantiationAwareBeanPostProcessors();
+	//判断是否需要检查依赖
+	boolean needsDepCheck = (mbd.getDependencyCheck() != AbstractBeanDefinition.DEPENDENCY_CHECK_NONE);
+
+	if (hasInstAwareBpps || needsDepCheck) {
+		if (pvs == null) {
+			pvs = mbd.getPropertyValues();
+		}
+		//提出当前正在创建的beanWrapper 依赖的对象
+		PropertyDescriptor[] filteredPds = filterPropertyDescriptorsForDependencyCheck(bw, mbd.allowCaching);
+		if (hasInstAwareBpps) {
+			//获取所有的后置处理器
+			for (BeanPostProcessor bp : getBeanPostProcessors()) {
+				if (bp instanceof InstantiationAwareBeanPostProcessor) {
+					InstantiationAwareBeanPostProcessor ibp = (InstantiationAwareBeanPostProcessor) bp;
+					//4、应用后置处理器InstantiationAwareBeanPostProcessor的方法postProcessPropertyValues，进行属性填充前的再次处理
+					pvs = ibp.postProcessPropertyValues(pvs, filteredPds, bw.getWrappedInstance(), beanName);
+					if (pvs == null) {
+						return;
+					}
+				}
+			}
+		}
+		//判断是否检查依赖
+		if (needsDepCheck) {
+			checkDependencies(beanName, mbd, filteredPds, pvs);
+		}
+	}
+```
+
+
+
+## 6.6 初始化操作：initializeBean(beanName, exposedObject, mbd)
+
+```java
+protected Object initializeBean(final String beanName, final Object bean, RootBeanDefinition mbd) {
+    // 激活Aware方法
+    if (System.getSecurityManager() != null) {
+        AccessController.doPrivileged(new PrivilegedAction<Object>() {
+            @Override
+            public Object run() {
+                invokeAwareMethods(beanName, bean);
+                return null;
+            }
+        }, getAccessControlContext());
+    } else {
+        //1、若我们的bean实现了XXXAware接口进行方法的回调
+        invokeAwareMethods(beanName, bean);
+    }
+ 
+    Object wrappedBean = bean;
+    if (mbd == null || !mbd.isSynthetic()) {
+        // 2、在初始化前应用BeanPostProcessor的postProcessBeforeInitialization方法，允许对bean实例进行包装
+        wrappedBean = applyBeanPostProcessorsBeforeInitialization(wrappedBean, beanName);
+    }
+ 
+    try {
+        // 3、调用初始化方法
+        invokeInitMethods(beanName, wrappedBean, mbd);
+    } catch (Throwable ex) {
+        throw new BeanCreationException(
+                (mbd != null ? mbd.getResourceDescription() : null),
+                beanName, "Invocation of init method failed", ex);
+    }
+ 
+    if (mbd == null || !mbd.isSynthetic()) {
+        // 4、在初始化后应用BeanPostProcessor的postProcessAfterInitialization方法，允许对bean实例进行包装
+        wrappedBean = applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName);
+    }
+    // 返回wrappedBean
+    return wrappedBean;
+}
+```
+
+1. **invokeAwareMethods(beanName, bean);若我们的bean实现了XXXAware接口进行方法的回调**
+2. **applyBeanPostProcessorsBeforeInitialization(wrappedBean, beanName)，在初始化前应用BeanPostProcessor的postProcessBeforeInitialization方法，允许对bean实例进行包装**
+3. **invokeInitMethods(beanName, wrappedBean, mbd)，调用初始化方法**
+4. **applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName)，在初始化后应用BeanPostProcessor的postProcessAfterInitialization方法，允许对bean实例进行包装**
+
+### 6.6.1 invokeAwareMethods(beanName, bean)
+
+* **对于bean实现了XXXAware接口进行方法的回调，以 Aware 为结尾的类都是一些扩展接口，用于提供给开发者获取到 BeanFactory 中的一些属性或对象**
+
+```java
+private void invokeAwareMethods(final String beanName, final Object bean) {
+    if (bean instanceof Aware) {
+        // BeanNameAware: 实现此接口的类想要拿到beanName，因此我们在这边赋值给它
+        if (bean instanceof BeanNameAware) {
+            ((BeanNameAware) bean).setBeanName(beanName);
+        }
+        // BeanClassLoaderAware：实现此接口的类想要拿到beanClassLoader，因此我们在这边赋值给它
+        if (bean instanceof BeanClassLoaderAware) {
+            ((BeanClassLoaderAware) bean).setBeanClassLoader(getBeanClassLoader());
+        }
+        // BeanFactoryAware: 实现此接口的类想要拿到 BeanFactory，因此我们在这边赋值给它
+        if (bean instanceof BeanFactoryAware) {
+            ((BeanFactoryAware) bean).setBeanFactory(AbstractAutowireCapableBeanFactory.this);
+        }
+    }
+}
+```
+
+
+
+### 6.6.2 applyBeanPostProcessorsBeforeInitialization(wrappedBean, beanName)
+
+* **在 bean 初始化前，调用所有 BeanPostProcessors 的 postProcessBeforeInitialization() 方法初始化之前的增强处理，可以改变之前创建的bean实例**
+
+```java
+@Override
+public Object applyBeanPostProcessorsBeforeInitialization(Object existingBean, String beanName)
+      throws BeansException {
+
+   Object result = existingBean;
+   //获取我们容器中的所有的bean的后置处理器
+   for (BeanPostProcessor processor : getBeanPostProcessors()) {
+      //挨个调用我们的bean的后置处理器的postProcessBeforeInitialization
+      Object current = processor.postProcessBeforeInitialization(result, beanName);
+      //若只有有一个返回null 那么直接返回原始的
+      if (current == null) {
+         return result;
+      }
+      result = current;
+   }
+   return result;
+}
+```
+
+
+
+### 6.6.3 初始化方法：invokeInitMethods(beanName, wrappedBean, mbd)
+
+```java
+protected void invokeInitMethods(String beanName, final Object bean, @Nullable RootBeanDefinition mbd)
+		throws Throwable {
+
+	//1、判断我们的容器中是否实现了InitializingBean接口，如果是回调InitializingBean的afterPropertiesSet()方法
+	boolean isInitializingBean = (bean instanceof InitializingBean);
+	if (isInitializingBean && (mbd == null || !mbd.isExternallyManagedInitMethod("afterPropertiesSet"))) {
+		if (logger.isDebugEnabled()) {
+			logger.debug("Invoking afterPropertiesSet() on bean with name '" + beanName + "'");
+		}
+		if (System.getSecurityManager() != null) {
+			try {
+				AccessController.doPrivileged((PrivilegedExceptionAction<Object>) () -> {
+					((InitializingBean) bean).afterPropertiesSet();
+					return null;
+				}, getAccessControlContext());
+			}
+			catch (PrivilegedActionException pae) {
+				throw pae.getException();
+			}
+		}
+		else {
+			//2、回调InitializingBean的afterPropertiesSet()方法
+			((InitializingBean) bean).afterPropertiesSet();
+		}
+	}
+
+	// 调用initMethod
+	if (mbd != null && bean.getClass() != NullBean.class) {
+		//我们beanclass中看是否有自己定义的init方法
+		String initMethodName = mbd.getInitMethodName();
+		//判断自定义的init方法名称不叫afterPropertiesSet
+		if (StringUtils.hasLength(initMethodName) &&
+				!(isInitializingBean && "afterPropertiesSet".equals(initMethodName)) &&
+				!mbd.isExternallyManagedInitMethod(initMethodName)) {
+			//3、调用我们自己的初始化方法
+			invokeCustomInitMethod(beanName, bean, mbd);
+		}
+	}
+}
+```
+
+1. **判断我们的容器中是否实现了InitializingBean接口，如果是回调InitializingBean的afterPropertiesSet()方法**
+
+2. **调用我们自己的初始化方法**
+
+   ![image-20211123164606190](https://gitee.com/jobim/blogimage/raw/master/img/20211123164606.png)
+
+
+
+### 6.6.4 applyBeanPostProcessorsAfterInitialization(wrappedBean, beanName)
+
+* **在初始化后应用BeanPostProcessor的postProcessAfterInitialization方法，允许对bean实例进行包装**
+* 和方法5.1.2 相同
+
+```java
+@Override
+public Object applyBeanPostProcessorsAfterInitialization(Object existingBean, String beanName)
+        throws BeansException {
+ 
+    Object result = existingBean;
+    // 1.遍历所有注册的BeanPostProcessor实现类，调用postProcessAfterInitialization方法
+    for (BeanPostProcessor beanProcessor : getBeanPostProcessors()) {
+       /**
+        * 在这里是后置处理器的【第九次或第二次调用】 aop和事务都会在这里生存代理对象
+        *
+        * 【很重要】
+        * 我们AOP @EnableAspectJAutoProxy 为我们容器中导入了 AnnotationAwareAspectJAutoProxyCreator
+        * 我们事务注解@EnableTransactionManagement 为我们的容器导入了 InfrastructureAdvisorAutoProxyCreator
+        * 都是实现了我们的 BeanPostProcessor接口,InstantiationAwareBeanPostProcessor,
+        * 在这里实现的是BeanPostProcessor接口的postProcessAfterInitialization来生成我们的代理对象
+        */
+        // 2.在bean初始化方法执行后，调用postProcessAfterInitialization方法
+        result = beanProcessor.postProcessAfterInitialization(result, beanName);
+        if (result == null) {
+            return result;
+        }
+    }
+    return result;
+}
+```
+
+
+
+## 6.7 registerDisposableBeanIfNecessary(beanName, bean, mbd)
+
+* **最后会调用到hasApplicableProcessors(bean, postProcessors)方法**
+* **该方法会进行后置处理，执行DestructionAwareBeanPostProcessor.requiresDestruction()**
+
+```java
+public static boolean hasApplicableProcessors(Object bean, List<BeanPostProcessor> postProcessors) {
+    if (!CollectionUtils.isEmpty(postProcessors)) {
+        // 1.遍历所有的BeanPostProcessor
+        for (BeanPostProcessor processor : postProcessors) {
+            // 2.如果processor是DestructionAwareBeanPostProcessor
+            if (processor instanceof DestructionAwareBeanPostProcessor) {
+                DestructionAwareBeanPostProcessor dabpp = (DestructionAwareBeanPostProcessor) processor;
+                try {
+                    if (dabpp.requiresDestruction(bean)) {
+                        // 3.如果给定的bean实例需要通过此后处理器进行销毁，则返回true
+                        return true;
+                    }
+                }
+                catch (AbstractMethodError err) {
+                    // A pre-4.3 third-party DestructionAwareBeanPostProcessor...
+                    // As of 5.0, we can let requiresDestruction be a Java 8 default method which returns true.
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+```
+
+在实际的开发中，应该没人会去销毁Spring的应用上下文
+
+
+
+# 七、总结
+
+**Bean 生命周期的整个执行过程描述如下：**
+
+![在这里插入图片描述](https://img-blog.csdnimg.cn/1af0f2b8ed62492ab08fb6e49c888e8e.png?x-oss-process=image/watermark,type_ZHJvaWRzYW5zZmFsbGJhY2s,shadow_50,text_Q1NETiBAQUNfSm9iaW0=,size_20,color_FFFFFF,t_70,g_se,x_16)
+
+1. InstantiationAwareBeanPostProcessor.postProcessBeforeInstantiation(beanClass, beanName)
+     该方法**在创建对象之前会先掉用**，如果有返回实例则直接使用不会去走下面创建对象的逻辑，并在之后执行
+       BeanPostProcessor.postProcessAfterInitialization(result, beanName)
+
+2. SmartInstantiationAwareBeanPostProcessor.determineCandidateConstructors(beanClass, beanName)
+     如果需要的话，**会在实例化对象之前执行**，有机会在这里决定当前bean用哪个构造器
+3. **实例化操作，默认采用无参构造**。
+4. MergedBeanDefinitionPostProcessor.postProcessMergedBeanDefinition(mbd, beanType, beanName)
+   **在对象实例化之后执行**
+5. InstantiationAwareBeanPostProcessor.postProcessAfterInstantiation(bw.getWrappedInstance(), beanName**)在bean创建完毕初始化之前执行**
+6. **根据属性名称注入：autowireByName**，根据类型进行注入：autowireByType
+7. InstantiationAwareBeanPostProcessor.postProcessPropertyValues(pvs, filteredPds, bw.getWrappedInstance(), beanName)**在bean的property属性注入完毕，向bean中设置属性之前执行，`自动装配`功能在此执行**
+8. 通过applyPropertyValues(beanName, mbd, bw, pvs)把**PropertyValues中所有的属性值给bean进行反射赋值**
+9. BeanPostProcessor.postProcessBeforeInitialization(result, beanName)**在bean初始化之前执行**，可以改变之前创建的bean实例
+10. invokeInitMethods(beanName, wrappedBean, mbd)**执行初始化方法**
+11. BeanPostProcessor.postProcessAfterInitialization(result, beanName)**在bean初始化之后执行**，可以改变之前创建的Bean实例
+12. 其中DestructionAwareBeanPostProcessor方法的postProcessBeforeDestruction(Object bean, String beanName)会**在销毁对象前执行**
+
+
+
+
+
